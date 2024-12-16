@@ -1,14 +1,11 @@
 # Automates VASP relaxations on MSU's HPCC.
-# NOTE: This script assumes the initial self-consistent run has been done already.
-# This is a kind of "set and forget" script, so make sure the gpu/cpu_jobscript time
-# is set accordingly. As of this version, I have not added support for auto-time adjustments.
+# NOTE: This script assumes the initial self-consistent run has been done already,
+# and does not perform the final self-consistent run.
 
 # By Ethan S. Snyder, 12/12/2024
 
-iterations=0;
-flags_defined=false
+################################################## FUNCTIONS ######################################################
 
-# Prints help information then exits this script
 function print_usage() {
 	echo -e "\nUsage: $(basename "$0") [options]"
 	echo -e "\n\nOptions:"
@@ -17,6 +14,11 @@ function print_usage() {
 	echo -e "\nSpecifically for use on MSU's HPCC."
 	exit 0
 }
+
+############################################## PARSE CALL-TIME FLAGS ##############################################
+
+iterations=0
+flags_defined=false
 
 # Handles flags operations and variable setting
 while getopts 'n:h' flag; do
@@ -29,30 +31,48 @@ done
 # Handles the case where no flags were defined
 if [ "$flags_defined" = false ]; then
 	echo "Exiting. No flags defined. Use -h for help."
-	exit 0
+	exit 1
 elif [ $iterations -le 0 ]; then
 	echo "Please use a positive number. What were you trying to achieve?"
 	echo "Use -h for help."
-	exit 0
+	exit 1
 fi
+
+###################################### FIND AND VALIDATE JOBSCRIPT FILE ##########################################
 
 # Ask user for jobscript file name
 echo "Input the jobscript file name:"
 read -p "(Default: ./jobscript*)" jobscriptFileName
 
-# If the user input is blank, use jobscript* instead of a name
+# If the user input is blank, use find their exact jobscript file name using "ls jobscript*"
 if [ -z "$jobscriptFileName" ]; then
-	jobscriptFileName="jobscript*"
+
+	# Take the first file name output by "ls jobscript*" and discard any errors
+	jobscriptFileName=$(ls jobscript* 2>/dev/null | head -n 1)
+
+	# Check if this file exists (ls may return empty). If file DNE, exit.
+	if [ ! -f "$jobscriptFileName" ]; then
+		echo "No file jobscript* found in working directory. Exiting."
+		exit 1
+	fi
+		
 # If the file name provided isn't found, exit the script
 elif [ -z "$(ls | grep $jobscriptFileName)" ]; then
 	echo "Jobscript file not found. Exiting."
 	exit 0
 fi
 
-##################################### REAL CODE BEGINS ##########################################
+# Correct the user's jobscript file if needed, adding "cp CONTCAR POSCAR"
+if grep -q "^cp CONTCAR POSCAR$" "$jobscriptFileName"; then
+	echo "$jobscriptFileName is correctly configured! Continuing..."
+else
+	# awk magic. Creates a temporary file with 'cp CONTCAR POSCAR' a line before the srun line.
+	awk '/^srun/ {print "cp CONTCAR POSCAR"} {print}' "$jobscriptFileName" > "${jobscriptFileName}.tmp" \
+		&& mv "${jobscriptFileName}.tmp" "$jobscriptFileName"
+	echo "Adding 'cp CONTCAR POSCAR' to jobscript file..."
+fi
 
-# Copy CONTCAR to POSCAR after user's initial run. Redundancy is fine if user has already done so
-cp CONTCAR POSCAR
+###################################### ITERATIVELY QUEUE CHIANED JOBS ##########################################
 
 # Grab the user's queue before and after adding to it
 sq > temp1.txt
@@ -60,7 +80,6 @@ sbatch $jobscriptFileName
 sq > temp2.txt
 
 # Queue up the desired amount of relaxations, chaining them together
-# Note: i starts at 1 because we just submitted a job.
 for ((i = 1; i < $iterations; i++)); do
 
 	# Since temp2 contains the ID of temp1's job, diff the files to eliminate that
