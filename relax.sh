@@ -55,7 +55,7 @@ if [ -z "$jobscriptFileName" ]; then
 		echo "No file jobscript* found in working directory. Exiting."
 		exit 1
 	fi
-		
+
 # If the file name provided isn't found, exit the script
 elif [ -z "$(ls | grep $jobscriptFileName)" ]; then
 	echo "Jobscript file not found. Exiting."
@@ -74,25 +74,14 @@ fi
 
 ###################################### ITERATIVELY QUEUE CHIANED JOBS ##########################################
 
-# Grab the user's queue before and after adding to it
-sq > temp1.txt
-sbatch $jobscriptFileName
-sq > temp2.txt
+# Submit the first job and catch its job ID from stdout
+id=$(sbatch $jobscriptFileName 2>&1 | tee /dev/tty | grep -o '[0-9]\{8\}')
 
 # Queue up the desired amount of relaxations, chaining them together
 for ((i = 1; i < $iterations; i++)); do
 
-	# Since temp2 contains the ID of temp1's job, diff the files to eliminate that
-	diff temp1.txt temp2.txt > temp3.txt
+	# Use the last submitted job ID as a dependency to the new job,
+	# then record the new jobs ID for next iteration.
+	id=$(sbatch -d afterok:"$id" $jobscriptFileName 2>&1 | tee /dev/tty | grep -o '[0-9]\{8\}')
 
-	# Parse out the 8 digit string (the job ID) from the newest temp file
-	id=$(grep -o '\b[0-9]\{8\}\b' "temp3.txt")
-
-	# Submit the job, record the queue before and after
-	sq > temp1.txt
-	sbatch -d afterok:"$id" $jobscriptFileName
-	sq > temp2.txt
 done
-
-# Before exiting, clean up the mess
-rm temp1.txt temp2.txt temp3.txt
